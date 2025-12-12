@@ -4,19 +4,16 @@ on:
   workflow_call:
     inputs:
       mention:
-        description: "Trigger mention text in comment"
         type: string
         required: false
         default: "@review-bot"
       reply:
-        description: "Reply message to post on the PR"
         type: string
         required: false
         default: "안녕하세요 리뷰봇입니다. 🤖 (호출 확인 완료!)"
-
-permissions:
-  issues: write
-  pull-requests: read
+    secrets:
+      bot_token:
+        required: false
 
 jobs:
   hello-reply:
@@ -27,10 +24,11 @@ jobs:
       pull-requests: read
 
     steps:
-      - name: Comment via REST (no gh / no GraphQL)
+      - name: Comment via REST
         uses: actions/github-script@v7
         with:
-          github-token: ${{ github.token }}
+          # bot_token을 넘기면 그걸 쓰고, 아니면 github.token 사용
+          github-token: ${{ secrets.bot_token || github.token }}
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
