@@ -20,8 +20,14 @@ inputs:
     description: "Format guidance for the review comment"
   model:
     required: false
-    default: "claude-3-5-sonnet-latest"
-    description: "Claude model id"
+    # ⚠️ 여기 값은 '너 계정에서 실제로 사용 가능한 모델 ID'로 바꿔야 함
+    # 일단 안전하게 input으로 받게 해두고, 미지정 시 오류 안내 코멘트로 빠지게 처리
+    default: "claude-sonnet-4-20250514"
+    description: "Claude model id (must be available for your API key)"
+  max_diff_chars:
+    required: false
+    default: "30000"
+    description: "Max diff chars to send to model"
 
 runs:
   using: "composite"
@@ -45,5 +51,6 @@ runs:
         PR_NUMBER: ${{ inputs.pr_number }}
         REPLY_STYLE: ${{ inputs.reply_style }}
         MODEL: ${{ inputs.model }}
+        MAX_DIFF_CHARS: ${{ inputs.max_diff_chars }}
       run: |
         node "$GITHUB_ACTION_PATH/scripts/review-agent.mjs"
