@@ -1,14 +1,15 @@
 name: Review Bot Hello (Reusable)
 
 on:
-  # 호출되는 워크플로우
   workflow_call:
     inputs:
       mention:
+        description: "Trigger mention text in comment"
         type: string
         required: false
         default: "@review-bot"
       reply:
+        description: "Reply message to post on the PR"
         type: string
         required: false
         default: "안녕하세요 리뷰봇입니다. 🤖 (호출 확인 완료!)"
@@ -19,12 +20,15 @@ permissions:
 
 jobs:
   hello-reply:
-    if: github.event.issue.pull_request && contains(github.event.comment.body, inputs.mention)
+    # PR에 달린 issue_comment 이면서, 지정 멘션이 포함된 경우만 실행
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, inputs.mention) }}
     runs-on: ubuntu-latest
+
     steps:
-      - name: Reply to PR
+      - name: Reply to PR (issue)
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }} # gh CLI 인증용
+          PR_NUMBER: ${{ github.event.issue.number }} # PR 번호 (issue number와 동일)
+          REPO: ${{ github.repository }} # owner/repo
         run: |
-          gh issue comment "$PR_NUMBER" --body "${{ inputs.reply }}"
+          gh issue comment "$PR_NUMBER" --repo "$REPO" --body "${{ inputs.reply }}"
