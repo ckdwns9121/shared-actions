@@ -1,0 +1,10 @@
+{
+  "name": "autonomous-pr-review",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.67",
+    "@octokit/rest": "^22.0.1",
+    "zod": "^3.25.76"
+  }
+}

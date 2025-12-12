@@ -1,0 +1,44 @@
+name: "Autonomous PR Review Agent"
+description: "Runs an autonomous PR review and posts a summary comment to the PR."
+
+inputs:
+  anthropic_api_key:
+    required: true
+    description: "Anthropic API key"
+  github_token:
+    required: true
+    description: "GitHub token (PAT recommended) for posting comments"
+  repo:
+    required: true
+    description: "owner/repo"
+  pr_number:
+    required: true
+    description: "PR number (same as issue number)"
+  reply_style:
+    required: false
+    default: "요약 / 중요한 이슈 / 개선 제안 / 테스트 제안"
+    description: "Format guidance for the review comment"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install deps (action)
+      shell: bash
+      run: |
+        cd "$GITHUB_ACTION_PATH"
+        npm ci
+
+    - name: Run review agent
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        BOT_TOKEN: ${{ inputs.github_token }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        REPLY_STYLE: ${{ inputs.reply_style }}
+      run: node "$GITHUB_ACTION_PATH/scripts/review-agent.mjs"
