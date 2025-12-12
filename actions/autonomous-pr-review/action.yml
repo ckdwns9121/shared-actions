@@ -1,37 +1,36 @@
-name: "Autonomous PR Review Agent"
-description: "Runs an autonomous PR review using Claude Agent SDK and posts a summary comment to the PR."
+name: "Autonomous PR Review"
+description: "Claude Agent SDK로 PR diff를 리뷰하고 코멘트를 남깁니다."
 
 inputs:
   anthropic_api_key:
     required: true
-    description: "Anthropic API key"
   github_token:
     required: true
-    description: "GitHub token (PAT recommended) for posting comments"
   repo:
     required: true
-    description: "owner/repo"
   pr_number:
     required: true
-    description: "PR number (same as issue number)"
   reply_style:
     required: false
     default: "요약 / 중요한 이슈 / 개선 제안 / 테스트 제안"
-    description: "Format guidance for the review comment"
 
 runs:
   using: "composite"
   steps:
-    - name: Setup Node
-      uses: actions/setup-node@v4
+    # ✅ caller workflow에서 actions/checkout@v4 해주는 걸 권장
+    # (그래야 github.workspace에 PR 코드가 있고, claude가 거기서 작업함)
+
+    - uses: actions/setup-node@v4
       with:
-        node-version: "20"
+        node-version: 20
 
     - name: Install Claude Code CLI
       shell: bash
-      run: npm i -g @anthropic-ai/claude-code
+      run: |
+        npm i -g @anthropic-ai/claude-code
+        claude --version
 
-    - name: Install deps (action)
+    - name: Install deps for this action
       shell: bash
       run: |
         cd "$GITHUB_ACTION_PATH"
@@ -45,6 +44,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PR_NUMBER: ${{ inputs.pr_number }}
         REPLY_STYLE: ${{ inputs.reply_style }}
+        # 로그 더 보고 싶으면 유지
         CLAUDE_CODE_VERBOSE: "1"
       run: |
         node "$GITHUB_ACTION_PATH/scripts/review-agent.mjs" 2>&1 | tee /tmp/review-agent.log
