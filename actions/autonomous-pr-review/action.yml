@@ -1,5 +1,5 @@
 name: "Autonomous PR Review Agent"
-description: "Runs an autonomous PR review and posts a summary comment to the PR."
+description: "Runs an autonomous PR review using Claude Agent SDK and posts a summary comment to the PR."
 
 inputs:
   anthropic_api_key:
@@ -27,6 +27,10 @@ runs:
       with:
         node-version: "20"
 
+    - name: Install Claude Code CLI
+      shell: bash
+      run: npm i -g @anthropic-ai/claude-code
+
     - name: Install deps (action)
       shell: bash
       run: |
@@ -41,4 +45,6 @@ runs:
         REPO: ${{ inputs.repo }}
         PR_NUMBER: ${{ inputs.pr_number }}
         REPLY_STYLE: ${{ inputs.reply_style }}
-      run: node "$GITHUB_ACTION_PATH/scripts/review-agent.mjs"
+        CLAUDE_CODE_VERBOSE: "1"
+      run: |
+        node "$GITHUB_ACTION_PATH/scripts/review-agent.mjs" 2>&1 | tee /tmp/review-agent.log

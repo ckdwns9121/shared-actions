@@ -7,20 +7,21 @@ const repoFull = process.env.REPO; // "owner/repo"
 const botToken = process.env.BOT_TOKEN;
 const replyStyle = process.env.REPLY_STYLE || "요약 / 중요한 이슈 / 개선 제안 / 테스트 제안";
 
-if (!repoFull || !repoFull.includes("/")) throw new Error("REPO is missing or invalid");
-if (!prNumber) throw new Error("PR_NUMBER is missing or invalid");
+if (!repoFull || !repoFull.includes("/")) throw new Error("REPO is missing or invalid (expected owner/repo)");
+if (!Number.isFinite(prNumber) || prNumber <= 0) throw new Error("PR_NUMBER is missing or invalid");
 if (!botToken) throw new Error("BOT_TOKEN is missing");
 
 const [owner, repo] = repoFull.split("/");
 const octokit = new Octokit({ auth: botToken });
 
+// GitHub MCP-like tools (custom tools)
 const githubTools = createSdkMcpServer({
   name: "github",
   version: "1.0.0",
   tools: [
     tool(
       "get_pr_files_with_patches",
-      "List changed files in a PR with patches (when available)",
+      "List changed files in a PR with patches (when available).",
       { prNumber: z.number() },
       async ({ prNumber }) => {
         const files = await octokit.paginate(octokit.pulls.listFiles, {
@@ -45,7 +46,7 @@ const githubTools = createSdkMcpServer({
 
     tool(
       "post_pr_comment",
-      "Post a single summary comment to the PR (issue comment)",
+      "Post a single summary comment to the PR (issue comment).",
       { prNumber: z.number(), body: z.string().min(1).max(65000) },
       async ({ prNumber, body }) => {
         await octokit.issues.createComment({
@@ -73,7 +74,12 @@ async function* prompt() {
 2) 더 깊게 확인이 필요하면 워크스페이스 파일을 Read/Grep/Glob로 찾아 읽는다.
 3) 아래 형식으로 리뷰를 작성한다:
    ${replyStyle}
-4) 마지막에 post_pr_comment로 PR에 "댓글 1개"만 남긴다.
+4) 마지막에 post_pr_comment로 PR에 "댓글 1개"만 남긴다. (라인 코멘트 X)
+
+추가 규칙:
+- 토큰/시크릿은 절대 출력하지 마.
+- 코드 수정(Edit)/커밋/푸시는 절대 하지 마.
+- 불확실하면 "확인 필요"로 남기고 근거를 설명해.
 
 PR 번호: ${prNumber}
 레포: ${owner}/${repo}
@@ -82,7 +88,16 @@ PR 번호: ${prNumber}
   };
 }
 
-const allowedTools = ["Read", "Grep", "Glob", "mcp__github__get_pr_files_with_patches", "mcp__github__post_pr_comment"];
+const allowedTools = [
+  // workspace inspection (caller repo is checked out by workflow)
+  "Read",
+  "Grep",
+  "Glob",
+
+  // our GitHub tools
+  "mcp__github__get_pr_files_with_patches",
+  "mcp__github__post_pr_comment",
+];
 
 for await (const _msg of query({
   prompt: prompt(),
@@ -90,8 +105,9 @@ for await (const _msg of query({
     mcpServers: { github: githubTools },
     allowedTools,
     maxTurns: 10,
-    systemPrompt: "보안: 토큰/시크릿 출력 금지. 코드 수정(Edit)/커밋/푸시 금지. 요약 리뷰 댓글만 작성.",
+    systemPrompt: "You are a careful PR reviewer. Do not modify code. Only produce a single summary PR comment.",
   },
 })) {
-  // 필요하면 console.log(_msg)로 스트리밍 로그 확인 가능
+  // If you want streaming debug output:
+  // console.log(JSON.stringify(_msg));
 }
