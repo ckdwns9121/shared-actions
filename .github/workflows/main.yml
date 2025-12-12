@@ -20,15 +20,21 @@ permissions:
 
 jobs:
   hello-reply:
-    # PR에 달린 issue_comment 이면서, 지정 멘션이 포함된 경우만 실행
     if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, inputs.mention) }}
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
 
     steps:
-      - name: Reply to PR (issue)
-        env:
-          GH_TOKEN: ${{ github.token }} # gh CLI 인증용
-          PR_NUMBER: ${{ github.event.issue.number }} # PR 번호 (issue number와 동일)
-          REPO: ${{ github.repository }} # owner/repo
-        run: |
-          gh issue comment "$PR_NUMBER" --repo "$REPO" --body "${{ inputs.reply }}"
+      - name: Comment via REST (no gh / no GraphQL)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `${{ inputs.reply }}`
+            });
