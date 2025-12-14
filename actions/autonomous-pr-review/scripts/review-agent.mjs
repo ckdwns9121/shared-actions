@@ -111,9 +111,7 @@ async function runClaudeReview(prompt) {
         break;
       }
 
-      const reason =
-        message.errors?.join("\n") ||
-        `Agent run failed with subtype ${message.subtype}`;
+      const reason = message.errors?.join("\n") || `Agent run failed with subtype ${message.subtype}`;
       throw new Error(reason);
     }
   }
