@@ -73,6 +73,82 @@ function isAnthropicModelNotFound(err) {
   return msg.toLowerCase().includes("model:") && msg.toLowerCase().includes("not_found");
 }
 
+const reviewOutputFormat = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      comments: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["path", "line", "body"],
+          properties: {
+            path: { type: "string" },
+            line: { type: "number" },
+            side: { type: "string", enum: ["RIGHT", "LEFT"] },
+            body: { type: "string" },
+            severity: { type: "string" },
+          },
+        },
+      },
+    },
+    required: ["comments"],
+  },
+};
+
+function normalizeReviewResult(structured, fallbackText) {
+  if (!structured && !fallbackText) return null;
+
+  const comments = Array.isArray(structured?.comments)
+    ? structured.comments
+        .map((comment) => {
+          const path = typeof comment.path === "string" ? comment.path.trim() : "";
+          const line = Number(comment.line);
+          const body = typeof comment.body === "string" ? comment.body.trim() : "";
+          const side = comment.side === "LEFT" ? "LEFT" : "RIGHT";
+          const severity = typeof comment.severity === "string" ? comment.severity.trim() : "";
+          return { path, line, body, side, severity };
+        })
+        .filter((comment) => comment.path && Number.isFinite(comment.line) && comment.line > 0 && comment.body)
+    : [];
+
+  const summary =
+    typeof structured?.summary === "string" && structured.summary.trim().length > 0
+      ? structured.summary.trim()
+      : fallbackText?.trim() || "";
+
+  if (comments.length === 0 && !summary) {
+    return null;
+  }
+
+  return { summary, comments };
+}
+
+async function postReviewComments(review) {
+  if (!review?.comments?.length) throw new Error("No review comments to post");
+
+  const comments = review.comments.map((comment) => {
+    const decoratedBody = comment.severity ? `(${comment.severity}) ${comment.body}` : comment.body;
+    return {
+      path: comment.path,
+      line: comment.line,
+      side: comment.side || "RIGHT",
+      body: decoratedBody,
+    };
+  });
+
+  await octokit.pulls.createReview({
+    owner,
+    repo,
+    pull_number: prNumber,
+    event: "COMMENT",
+    body: review.summary || "자동 코드 리뷰",
+    comments,
+  });
+}
+
 async function runClaudeReview(prompt) {
   const stream = query({
     prompt,
@@ -81,16 +157,16 @@ async function runClaudeReview(prompt) {
       permissionMode: "plan",
       persistSession: false,
       tools: [],
+      outputFormat: reviewOutputFormat,
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
         append: [
           "You run inside a CI workflow as a senior code reviewer.",
           "Never execute tools or make filesystem changes.",
-          "All answers must be in Korean and follow this template:",
-          replyStyle,
-          "Highlight severity (High/Med/Low) and concrete fixes.",
-          "Always end with explicit 테스트 제안.",
+          `모든 응답은 한국어 JSON으로 작성하고 summary에는 "${replyStyle}" 구조를 압축해서 담아라.`,
+          "각 comment.body에는 해당 변경의 문제 설명, 심각도(High/Med/Low), 구체적 수정안, 테스트 제안을 포함해라.",
+          "Return JSON that lists summary and per-file comments with file path and head line numbers.",
         ].join(" "),
       },
     },
@@ -98,6 +174,7 @@ async function runClaudeReview(prompt) {
 
   let finalOutput = "";
   let assistantFallback = "";
+  let structuredOutput = null;
 
   for await (const message of stream) {
     if (message.type === "assistant") {
@@ -107,6 +184,7 @@ async function runClaudeReview(prompt) {
 
     if (message.type === "result") {
       if (message.subtype === "success" && !message.is_error) {
+        structuredOutput = message.structured_output ?? null;
         finalOutput = message.result?.trim() || "";
         break;
       }
@@ -116,7 +194,7 @@ async function runClaudeReview(prompt) {
     }
   }
 
-  return finalOutput || assistantFallback;
+  return { structured: structuredOutput, fallbackText: finalOutput || assistantFallback };
 }
 
 async function main() {
@@ -126,13 +204,13 @@ async function main() {
   const clippedDiff = clip(diff, maxDiffChars);
 
   const userPrompt = `
-아래 정보는 GitHub Pull Request 컨텍스트다.
-코드 diff에 없는 사실은 추측하지 말고, 문제를 지적할 때는 근거가 되는 코드 조각/파일을 명확히 언급해라.
-가능한 경우 바로 적용할 수 있는 수정 지침 또는 예시 코드를 제공해라.
-응답은 반드시 한국어로 작성하고, 아래 출력 템플릿을 그대로 사용해라.
-
-출력 템플릿:
-${replyStyle}
+아래는 GitHub Pull Request 정보다.
+- diff에 없는 사실은 추측하지 말고, 반드시 근거가 되는 변경 라인과 파일을 명시해라.
+- 각 문제는 하이라이트(High/Med/Low)를 포함한 심각도와 구체적인 수정 가이드를 제시해라.
+- 응답은 한국어 JSON 객체 형식으로만 작성해라.
+- JSON 형식 예시: {"summary": "<전체 요약>", "comments": [{"path": "src/file.ts", "line": 42, "side": "RIGHT", "severity": "High", "body": "구체적 지적 및 테스트 제안"}]}
+- comments 배열에는 diff에서 문제가 있는 각 변경사항에 대한 리뷰를 넣어라. 최소 1개 이상이 되도록 노력해라.
+- summary에는 PR 전체 요약과 전반적인 테스트 제안을 담아라.
 
 [PR 제목]
 ${pr.title ?? ""}
@@ -144,14 +222,20 @@ ${pr.body ?? ""}
 ${clippedDiff}
 `.trim();
 
-  const text = await runClaudeReview(userPrompt);
+  const { structured, fallbackText } = await runClaudeReview(userPrompt);
+  const review = normalizeReviewResult(structured, fallbackText);
 
-  if (!text) {
+  if (!review) {
     await postComment("리뷰 결과를 생성하지 못했습니다. (빈 응답)");
     return;
   }
 
-  await postComment(text);
+  if (review.comments.length > 0) {
+    await postReviewComments(review);
+    return;
+  }
+
+  await postComment(review.summary || "리뷰 결과를 생성하지 못했습니다. (요약 없음)");
 }
 
 main().catch(async (err) => {
