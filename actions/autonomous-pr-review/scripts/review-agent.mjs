@@ -1,4 +1,4 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query as streamQuery } from "@anthropic-ai/claude-agent-sdk";
 import { Octokit } from "@octokit/rest";
 
 function must(name) {
@@ -14,12 +14,30 @@ const prNumber = Number(must("PR_NUMBER"));
 
 const replyStyle = process.env.REPLY_STYLE || "요약 / 중요한 이슈 / 개선 제안 / 테스트 제안";
 const model = process.env.MODEL || "claude-sonnet-4-20250514";
-const maxDiffChars = "100000";
+const maxDiffChars = Number(process.env.MAX_DIFF_CHARS || "100000");
+const permissionMode = process.env.PERMISSION_MODE || "plan";
+const maxTurns = Number(process.env.MAX_TURNS || "20");
+const allowedTools = process.env.ALLOWED_TOOLS
+  ? process.env.ALLOWED_TOOLS.split(",").map((name) => name.trim()).filter(Boolean)
+  : undefined;
 const [owner, repo] = repoFull.split("/");
 if (!owner || !repo) throw new Error(`REPO must be "owner/repo": got ${repoFull}`);
 if (!Number.isFinite(prNumber) || prNumber <= 0) throw new Error(`PR_NUMBER invalid: ${process.env.PR_NUMBER}`);
 
 const octokit = new Octokit({ auth: token });
+const githubMcpToken = process.env.MCP_TOKEN || token;
+const githubMcpServers = githubMcpToken
+  ? {
+      github: {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/github"],
+        env: {
+          GITHUB_TOKEN: githubMcpToken,
+        },
+      },
+    }
+  : undefined;
 
 function clip(text, maxChars) {
   if (!text) return "";
@@ -171,25 +189,26 @@ async function postReviewComments(review) {
 }
 
 async function runClaudeReview(prompt) {
-  const stream = query({
+  const stream = streamQuery({
     prompt,
-    options: {
-      model,
-      permissionMode: "plan",
-      persistSession: false,
-      tools: [],
-      outputFormat: reviewOutputFormat,
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append: [
-          "You run inside a CI workflow as a senior code reviewer.",
-          "Never execute tools or make filesystem changes.",
-          `모든 응답은 한국어 JSON으로 작성하고 summary에는 "${replyStyle}" 구조를 압축해서 담아라.`,
-          "각 comment.body에는 해당 변경의 문제 설명, 심각도(High/Med/Low), 구체적 수정안, 테스트 제안을 포함해라.",
-          "Return JSON that lists summary and per-file comments with file path and head line numbers.",
-        ].join(" "),
-      },
+    model,
+    mcpServers: githubMcpServers,
+    allowedTools,
+    permissionMode,
+    maxTurns,
+    tools: [],
+    persistSession: false,
+    outputFormat: reviewOutputFormat,
+    systemPrompt: {
+      type: "preset",
+      preset: "claude_code",
+      append: [
+        "You run inside a CI workflow as a senior code reviewer.",
+        "Never execute tools or make filesystem changes.",
+        `모든 응답은 한국어 JSON으로 작성하고 summary에는 "${replyStyle}" 구조를 압축해서 담아라.`,
+        "각 comment.body에는 해당 변경의 문제 설명, 심각도(High/Med/Low), 구체적 수정안, 테스트 제안을 포함해라.",
+        "Return JSON that lists summary and per-file comments with file path and head line numbers.",
+      ].join(" "),
     },
   });
 
