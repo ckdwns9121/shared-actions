@@ -97,6 +97,107 @@ function isAnthropicModelNotFound(err) {
   return msg.toLowerCase().includes("model:") && msg.toLowerCase().includes("not_found");
 }
 
+const reviewOutputFormat = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      comments: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["path", "line", "body"],
+          properties: {
+            path: { type: "string" },
+            line: { type: "number" },
+            side: { type: "string", enum: ["RIGHT", "LEFT"] },
+            body: { type: "string" },
+            severity: { type: "string" },
+          },
+        },
+      },
+    },
+    required: ["comments"],
+  },
+};
+
+function normalizeReviewResult(structured, fallbackText) {
+  if (!structured && !fallbackText) return null;
+
+  const comments = Array.isArray(structured?.comments)
+    ? structured.comments
+        .map((comment) => {
+          const path = typeof comment.path === "string" ? comment.path.trim() : "";
+          const line = Number(comment.line);
+          const body = typeof comment.body === "string" ? comment.body.trim() : "";
+          const side = comment.side === "LEFT" ? "LEFT" : "RIGHT";
+          const severity = typeof comment.severity === "string" ? comment.severity.trim() : "";
+          return { path, line, body, side, severity };
+        })
+        .filter((comment) => comment.path && Number.isFinite(comment.line) && comment.line > 0 && comment.body)
+    : [];
+
+  const summary =
+    typeof structured?.summary === "string" && structured.summary.trim().length > 0
+      ? structured.summary.trim()
+      : fallbackText?.trim() || "";
+
+  if (comments.length === 0 && !summary) {
+    return null;
+  }
+
+  return { summary, comments };
+}
+
+async function postReviewComments(review) {
+  if (!review?.comments?.length) throw new Error("No review comments to post");
+
+  const comments = review.comments.map((comment) => {
+    const decoratedBody = comment.severity ? `(${comment.severity}) ${comment.body}` : comment.body;
+    return {
+      path: comment.path,
+      line: comment.line,
+      side: comment.side || "RIGHT",
+      body: decoratedBody,
+    };
+  });
+
+  await octokit.pulls.createReview({
+    owner,
+    repo,
+    pull_number: prNumber,
+    event: "COMMENT",
+    body: review.summary || "자동 코드 리뷰",
+    comments,
+  });
+}
+
+async function fetchLatestUserRequest() {
+  try {
+    const commentsRes = await octokit.issues.listComments({
+      owner,
+      repo,
+      issue_number: prNumber,
+      per_page: 100,
+    });
+
+    const comments = commentsRes.data ?? [];
+    for (let i = comments.length - 1; i >= 0; i -= 1) {
+      const body = comments[i]?.body || "";
+      if (!body) continue;
+      const mentionIndex = body.toLowerCase().indexOf("@review-bot");
+      if (mentionIndex === -1) continue;
+      const instructions = body.slice(mentionIndex + "@review-bot".length).trim();
+      if (instructions) return instructions;
+    }
+    return null;
+  } catch (err) {
+    console.warn("[Agent] Failed to fetch user request:", err);
+    return null;
+  }
+}
+
 async function runClaudeReview(prompt) {
   const stream = streamQuery({
     prompt,
@@ -108,20 +209,22 @@ async function runClaudeReview(prompt) {
     persistSession: false,
     canUseTool: autoApproveToolRequest,
     allowDangerouslySkipPermissions: allowDangerouslySkipPermissions || undefined,
+    outputFormat: reviewOutputFormat,
     systemPrompt: {
       type: "preset",
       preset: "claude_code",
       append: [
         "You are an autonomous senior engineer operating inside GitHub Actions.",
-        "Use the available GitHub MCP tools to inspect the pull request, its files, and diffs.",
-        "Run whatever built-in tools you need without asking for confirmation.",
-        `최종 답변은 한국어로 작성하고 "${replyStyle}" 구조를 참고해 핵심 요약, 주요 이슈, 개선안, 테스트 제안을 포함해라.`,
+        "Use local inputs first; if additional context is needed, use GitHub MCP tools.",
+        "Return JSON with summary/comments per the schema, do not emit free-form text outside the schema.",
+        `summary는 한국어로 "${replyStyle}" 구조를 따르고 각 comment에는 파일 경로/라인/심각도/수정안/테스트 제안을 포함해라.`,
       ].join(" "),
     },
   });
 
   let finalOutput = "";
   let assistantFallback = "";
+  let structuredOutput = null;
 
   for await (const message of stream) {
     logAgentMessage(message);
@@ -132,6 +235,7 @@ async function runClaudeReview(prompt) {
 
     if (message.type === "result") {
       if (message.subtype === "success" && !message.is_error) {
+        structuredOutput = message.structured_output ?? null;
         finalOutput = message.result?.trim() || "";
         break;
       }
@@ -141,28 +245,39 @@ async function runClaudeReview(prompt) {
     }
   }
 
-  return finalOutput || assistantFallback;
+  return { structured: structuredOutput, fallbackText: finalOutput || assistantFallback };
 }
 
 async function main() {
+  const userRequest = await fetchLatestUserRequest();
+  const userRequestBlock = userRequest
+    ? `사용자 추가 지시사항:\n${userRequest}\n- 위 요구사항을 가능한 한 충실히 반영해라.`
+    : "사용자 추가 지시사항: (추가 요청 없음)";
+
   const userPrompt = `
 당신은 GitHub Action 안에서 ${repoFull} 저장소의 PR #${prNumber}를 리뷰하는 자율 에이전트다.
-- 반드시 GitHub MCP 도구를 이용해 PR 제목, 설명, 변경 파일, diff를 직접 조사해라.
-- 변경 파일마다 문제가 발견되면 GitHub CLI(\`gh pr review --comment\`)나 GitHub MCP의 리뷰 작성 도구를 사용해 해당 파일/라인에 인라인 코멘트를 남겨라.
-- 문서(.md)만 수정된 경우라도 변경 목적이 PR 제목과 일치하는지 확인하고, 불일치 시 인라인 또는 일반 코멘트로 지적해라.
-- 가능한 경우 코드 예시, 수정 방법, 필요 테스트를 각 코멘트에 포함해라.
-- 모든 인라인 코멘트를 남긴 후, 최종 답변에서는 전체 요약/주요 이슈/개선 제안/추가 테스트 아이디어를 한국어로 제공하되 이미 남긴 인라인 코멘트 내용을 중복하지 말고 전체 맥락을 정리해라.
-- 어떤 도구를 썼는지, 남긴 코멘트 수, 추가로 실행해야 할 검증 절차를 마지막 문단에 정리해라.
+${userRequestBlock}
+- GitHub MCP 도구(예: pull_request.get, pull_request.files, pull_request.diff 등)를 사용해 PR 제목, 설명, 변경 파일, diff를 직접 조사해라.
+- summary는 한국어로 "${replyStyle}" 순서를 따르며 전체 요약/주요 이슈/개선안/테스트 제안을 포함해야 한다.
+- comments 배열에는 각 문제에 대한 구체적 리뷰를 넣고 path/line/side/severity/body 필드를 채워라. body에는 문제 설명, 원인, 수정안, 필요한 테스트를 모두 서술해라.
+- PR 제목/설명과 실제 변경 내용이 다르면 summary에서 지적하고, 모든 사실은 MCP로 확인한 내용만 사용해라.
+- JSON 스키마를 반드시 지키고, free-form 텍스트는 summary/body 필드 외에 쓰지 마라.
 `.trim();
 
-  const text = await runClaudeReview(userPrompt);
+  const { structured, fallbackText } = await runClaudeReview(userPrompt);
+  const review = normalizeReviewResult(structured, fallbackText);
 
-  if (!text) {
+  if (!review) {
     await postComment("리뷰 결과를 생성하지 못했습니다. (빈 응답)");
     return;
   }
 
-  await postComment(text);
+  if (review.comments.length > 0) {
+    await postReviewComments(review);
+    return;
+  }
+
+  await postComment(review.summary || "리뷰 결과를 생성하지 못했습니다. (요약 없음)");
 }
 
 main().catch(async (err) => {
