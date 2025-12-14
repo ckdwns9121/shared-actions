@@ -52,5 +52,6 @@ runs:
         REPLY_STYLE: ${{ inputs.reply_style }}
         MODEL: ${{ inputs.model }}
         MAX_DIFF_CHARS: ${{ inputs.max_diff_chars }}
+        MCP_TOKEN: ${{ inputs.mcp_token }}
       run: |
         node "$GITHUB_ACTION_PATH/scripts/review-agent.mjs"
