@@ -20,6 +20,14 @@ const allowedTools = process.env.ALLOWED_TOOLS
   ? process.env.ALLOWED_TOOLS.split(",").map((name) => name.trim()).filter(Boolean)
   : undefined;
 const allowDangerouslySkipPermissions = permissionMode === "bypassPermissions";
+
+async function autoApproveToolRequest(_toolName, input) {
+  return {
+    behavior: "allow",
+    updatedInput: typeof input === "object" && input !== null ? input : {},
+  };
+}
+
 const [owner, repo] = repoFull.split("/");
 if (!owner || !repo) throw new Error(`REPO must be "owner/repo": got ${repoFull}`);
 if (!Number.isFinite(prNumber) || prNumber <= 0) throw new Error(`PR_NUMBER invalid: ${process.env.PR_NUMBER}`);
@@ -76,6 +84,7 @@ async function runClaudeReview(prompt) {
     permissionMode,
     maxTurns,
     persistSession: false,
+    canUseTool: autoApproveToolRequest,
     allowDangerouslySkipPermissions: allowDangerouslySkipPermissions || undefined,
     systemPrompt: {
       type: "preset",
