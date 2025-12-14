@@ -56,6 +56,28 @@ function extractTextBlocks(message) {
     .trim();
 }
 
+function logAgentMessage(message) {
+  try {
+    if (!message) return;
+    if (message.type === "assistant") {
+      const text = extractTextBlocks(message.message);
+      console.log("[Agent][assistant]", text || JSON.stringify(message.message));
+      return;
+    }
+    if (message.type === "tool_call" || message.type === "tool_result") {
+      console.log("[Agent][" + message.type + "]", JSON.stringify(message, null, 2));
+      return;
+    }
+    if (message.type === "result") {
+      console.log("[Agent][result]", JSON.stringify(message, null, 2));
+      return;
+    }
+    console.log("[Agent][" + (message.type || "unknown") + "]", JSON.stringify(message, null, 2));
+  } catch (err) {
+    console.error("[Agent][log_error]", err);
+  }
+}
+
 async function postComment(body) {
   await octokit.issues.createComment({
     owner,
@@ -102,6 +124,7 @@ async function runClaudeReview(prompt) {
   let assistantFallback = "";
 
   for await (const message of stream) {
+    logAgentMessage(message);
     if (message.type === "assistant") {
       const text = extractTextBlocks(message.message);
       if (text) assistantFallback = text;
