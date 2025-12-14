@@ -14,11 +14,40 @@ const prNumber = Number(must("PR_NUMBER"));
 
 const replyStyle = process.env.REPLY_STYLE || "요약 / 중요한 이슈 / 개선 제안 / 테스트 제안";
 const model = process.env.MODEL || "claude-sonnet-4-20250514";
+const maxDiffChars = "100000";
 const [owner, repo] = repoFull.split("/");
 if (!owner || !repo) throw new Error(`REPO must be "owner/repo": got ${repoFull}`);
 if (!Number.isFinite(prNumber) || prNumber <= 0) throw new Error(`PR_NUMBER invalid: ${process.env.PR_NUMBER}`);
 
 const octokit = new Octokit({ auth: token });
+
+function clip(text, maxChars) {
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars) + "\n\n...(truncated)...";
+}
+
+function removeMarkdownDiffs(diffText) {
+  if (!diffText) return "";
+  const sections = diffText.split(/\ndiff --git /);
+  const kept = [];
+
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    if (!section) continue;
+    const chunk = i === 0 ? section : `diff --git ${section}`;
+    const headerMatch = chunk.match(/^diff --git a\/(.+?) b\/(.+?)$/m);
+    if (!headerMatch) {
+      kept.push(chunk);
+      continue;
+    }
+    const filePath = headerMatch[1] || "";
+    if (filePath.trim().toLowerCase().endsWith(".md")) continue;
+    kept.push(chunk);
+  }
+
+  return kept.join("\n").trim();
+}
 
 function extractTextBlocks(message) {
   if (!message?.content || !Array.isArray(message.content)) return "";
@@ -192,11 +221,8 @@ async function runClaudeReview(prompt) {
 async function main() {
   const pr = await fetchPR();
   const diff = await fetchPRDiff();
-  console.log("=== PR Diff Start ===");
-  console.log(diff);
-  console.log("=== PR Diff End ===");
-
-  const clippedDiff = diff;
+  const filteredDiff = removeMarkdownDiffs(diff);
+  const clippedDiff = clip(filteredDiff, maxDiffChars);
 
   const userPrompt = `
 아래는 GitHub Pull Request 정보다.
