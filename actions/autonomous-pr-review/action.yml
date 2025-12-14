@@ -2,6 +2,9 @@ name: "Autonomous PR Review"
 description: "Fetch PR diff, ask Claude via API, and post a summary comment."
 
 inputs:
+  mcp_token:
+    required: true
+    description: "GitHub MCP token"
   anthropic_api_key:
     required: true
     description: "Anthropic API key"
